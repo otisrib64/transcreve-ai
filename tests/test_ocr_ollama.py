@@ -176,6 +176,7 @@ def test_ocr_frames_failure_leaves_none_for_fallback(tmp_path: Path, monkeypatch
         raise OSError("conexao recusada")
 
     monkeypatch.setattr(ocr_ollama, "ocr_image_ollama", boom)
+    monkeypatch.setattr(ocr_ollama.time, "sleep", lambda s: None)
     batch = ocr_ollama.ocr_frames(frames, "m", workers=1)
     assert batch.results == [None, None]
     assert batch.failed == ["1.png", "2.png"]
@@ -194,6 +195,7 @@ def test_ocr_frames_isolated_failure_is_retried_then_skipped(tmp_path: Path, mon
         return OcrResult(f"ok {path.name}", f"ok {path.name}")
 
     monkeypatch.setattr(ocr_ollama, "ocr_image_ollama", flaky)
+    monkeypatch.setattr(ocr_ollama.time, "sleep", lambda s: None)
     batch = ocr_ollama.ocr_frames(frames, "m", workers=1)
     assert [r.text for r in batch.results] == ["ok 1.png", "ok 2.png"]
     assert batch.failed == [] and calls["1.png"] == 2
@@ -206,5 +208,6 @@ def test_ocr_frames_gives_up_after_consecutive_failures(tmp_path: Path, monkeypa
         raise OSError("conexao recusada")
 
     monkeypatch.setattr(ocr_ollama, "ocr_image_ollama", boom)
+    monkeypatch.setattr(ocr_ollama.time, "sleep", lambda s: None)
     batch = ocr_ollama.ocr_frames(frames, "m", workers=1)
     assert "seguidas" in batch.error and "conexao recusada" in batch.error

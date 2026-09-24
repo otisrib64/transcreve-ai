@@ -18,6 +18,7 @@ import base64
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -288,6 +289,7 @@ def ocr_frames(
         try:
             return ocr_image_ollama(frame_paths[i], model)
         except Exception:  # noqa: BLE001
+            time.sleep(1.0)
             return ocr_image_ollama(frame_paths[i], model)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
