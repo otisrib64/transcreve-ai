@@ -120,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_run.add_argument(
         "--ocr-model",
         default="",
-        help="Modelo do Ollama para OCR (padrao: VIDEO_KB_OCR_MODEL ou deepseek-ocr:3b).",
+        help="Modelo do Ollama para OCR (padrao: VIDEO_KB_OCR_MODEL ou glm-ocr).",
     )
     agent_run.add_argument(
         "--cookies-browser",
@@ -220,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_batch.add_argument(
         "--ocr-model",
         default="",
-        help="Modelo do Ollama para OCR (padrao: VIDEO_KB_OCR_MODEL ou deepseek-ocr:3b).",
+        help="Modelo do Ollama para OCR (padrao: VIDEO_KB_OCR_MODEL ou glm-ocr).",
     )
     agent_batch.add_argument("--cookies-browser", default=None, help="Browser para cookies")
     agent_batch.add_argument("--cookies", default=None, help="Arquivo cookies.txt")
@@ -322,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--ocr-model",
         default="",
-        help="Modelo do Ollama para OCR (padrao: VIDEO_KB_OCR_MODEL ou deepseek-ocr:3b).",
+        help="Modelo do Ollama para OCR (padrao: VIDEO_KB_OCR_MODEL ou glm-ocr).",
     )
     analyze.add_argument(
         "--cookies-browser",

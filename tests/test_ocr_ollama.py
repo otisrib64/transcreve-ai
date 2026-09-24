@@ -21,6 +21,44 @@ def test_clean_ocr_output_keeps_normal_text_and_indent():
     assert ocr_ollama.clean_ocr_output(raw) == "def f():\n    return 1"
 
 
+def test_clean_ocr_output_cuts_repetition_in_the_middle():
+    raw = "CUPOM\n---\nItem A 10\nItem B 20\nTOTAL 30\n---\nItem A 10\nItem B 20\nTOTAL 30\n---\nItem"
+    assert ocr_ollama.clean_ocr_output(raw) == "CUPOM\n---\nItem A 10\nItem B 20\nTOTAL 30"
+
+
+def test_clean_ocr_output_keeps_two_equal_lines():
+    assert ocr_ollama.clean_ocr_output("PGM\nPGM\nPVW") == "PGM\nPGM\nPVW"
+
+
+def test_clean_ocr_output_drops_duplicated_html_table():
+    raw = "Nome Qtd\nCabo 2\n<table><tr><td>Nome</td><td>Qtd</td></tr></table>"
+    assert ocr_ollama.clean_ocr_output(raw) == "Nome Qtd\nCabo 2"
+
+
+def test_clean_ocr_output_converts_table_only_output():
+    raw = "<table><tr><td>Nome</td><td>Qtd</td></tr><tr><td>Cabo</td><td>2</td></tr></table>"
+    assert ocr_ollama.clean_ocr_output(raw) == "Nome | Qtd\nCabo | 2"
+
+
+def test_clean_ocr_output_discards_no_text_explanations():
+    raw = "The image provided is too blurry to recognize any text.\nI will provide a description."
+    assert ocr_ollama.clean_ocr_output(raw) == ""
+
+
+def test_frame_is_blank(tmp_path: Path):
+    from PIL import Image
+
+    preto, texto = tmp_path / "p.png", tmp_path / "t.png"
+    Image.new("RGB", (64, 64), "black").save(preto)
+    img = Image.new("RGB", (64, 64), "white")
+    for x in range(0, 64, 3):
+        for y in range(10, 20):
+            img.putpixel((x, y), (0, 0, 0))
+    img.save(texto)
+    assert ocr_ollama.frame_is_blank(preto)
+    assert not ocr_ollama.frame_is_blank(texto)
+
+
 def test_same_frame_threshold():
     assert ocr_ollama.same_frame(0b1011, 0b1010)
     assert not ocr_ollama.same_frame(0, (1 << 20) - 1)
@@ -68,7 +106,7 @@ def test_ocr_image_ollama_sends_model_prompt_and_stop(tmp_path: Path):
             return False
 
         def read(self):
-            return b'{"response": "Texto\\n```\\nTexto"}'
+            return b'{"response": "Texto\\n```\\nTexto\\nTexto"}'
 
     def fake_urlopen(req, timeout):
         import json

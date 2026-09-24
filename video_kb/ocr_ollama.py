@@ -5,8 +5,11 @@ continua sendo o padrao; se o Ollama nao responder, o pipeline volta para ele.
 
 Modelos de visao leem texto sobre video (GC, placar, legendas queimadas, telas
 de software) muito melhor que o tesseract. Benchmark numa RTX 2080 Ti
-(Ollama 0.34, 7 imagens com gabarito): deepseek-ocr:3b ~245 tok/s e ~0,6% de
-erro por caractere; glm-ocr ~280 tok/s, mas repete a saida (ver _STOPS).
+(Ollama 0.34): em imagens limpas glm-ocr (~280 tok/s, ~4 GB de VRAM) e
+deepseek-ocr:3b (~245 tok/s, ~9 GB) erram <1% dos caracteres; em frames reais
+de video o deepseek-ocr inventa texto (tabelas, outro idioma) em frames de
+transicao e o glm-ocr le fielmente, por isso ele e o padrao. O glm-ocr repete a
+saida as vezes (ver _STOPS e clean_ocr_output).
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from pathlib import Path
 from .ocr import OcrResult
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
-DEFAULT_OCR_MODEL = "deepseek-ocr:3b"
+DEFAULT_OCR_MODEL = "glm-ocr"
 
 _GENERIC_PROMPT = (
     "Transcreva todo o texto visivel nesta imagem exatamente como aparece, linha "
@@ -40,6 +43,13 @@ _OCR_ONLY_MODELS = set(_PROMPTS)
 
 _GROUNDING_TAG = re.compile(r"<\|(?:ref|det|/ref|/det)\|>.*?(?=<\||$)|<\|[a-z_/]+\|>", re.S)
 _FENCE = re.compile(r"^```[a-z]*\s*$", re.M)
+_HTML_TAG = re.compile(r"<[^>]+>")
+# Frases que o modelo escreve quando nao ha texto legivel (nao sao OCR).
+_NO_TEXT = re.compile(
+    r"(the image (provided )?(is|appears)|no (discernible|legible|readable) text|"
+    r"i will provide a description|nao ha texto|não há texto|sem texto legivel)",
+    re.I,
+)
 
 
 def ollama_url() -> str:
@@ -66,22 +76,49 @@ def ollama_available(url: str | None = None, model: str | None = None, timeout: 
     return True, ""
 
 
+def _cut_repetition(lines: list[str]) -> list[str]:
+    """Corta no inicio da primeira repeticao de bloco (em qualquer ponto da saida)."""
+    n = len(lines)
+    for start in range(n):
+        for size in range(1, (n - start) // 2 + 1):
+            block = lines[start : start + size]
+            nxt = lines[start + size : start + 2 * size]
+            # Linha unica so conta como loop se repetir 3+ vezes seguidas.
+            if size == 1 and lines[start + 1 : start + 3] != block * 2:
+                continue
+            if nxt == block or (start + 2 * size >= n - 1 and nxt[:-1] == block[: len(nxt) - 1] and len(nxt) > 1):
+                return lines[: start + size]
+    return lines
+
+
+def _table_to_text(html: str) -> str:
+    rows = re.split(r"</tr>", html, flags=re.I)
+    out = []
+    for row in rows:
+        cells = [c.strip() for c in re.split(r"</t[dh]>", row, flags=re.I)]
+        cells = [_HTML_TAG.sub("", c).strip() for c in cells]
+        cells = [c for c in cells if c]
+        if cells:
+            out.append(" | ".join(cells))
+    return "\n".join(out)
+
+
 def clean_ocr_output(text: str) -> str:
-    """Remove cercas de codigo, tags de grounding e repeticao do bloco inicial."""
+    """Remove cercas de codigo, tags, tabelas duplicadas, frases de 'sem texto' e repeticoes."""
     text = _GROUNDING_TAG.sub("", text)
     text = _FENCE.sub("", text)
+    # glm-ocr costuma escrever o texto e depois repetir o mesmo conteudo como <table>.
+    pos = text.lower().find("<table")
+    if pos > 0 and text[:pos].strip():
+        text = text[:pos]
+    elif pos == 0:
+        text = _table_to_text(text)
+    text = _HTML_TAG.sub("", text)
     lines = [line.rstrip() for line in text.splitlines()]
-    # Corta a repeticao: se as primeiras N linhas uteis reaparecem em sequencia,
-    # fica so a primeira ocorrencia.
     useful = [line for line in lines if line.strip()]
-    for size in range(1, len(useful) // 2 + 1):
-        # A ultima linha pode ter sido cortada pelo limite de tokens.
-        if useful[size : 2 * size] == useful[:size] and all(
-            useful[i] == useful[i % size] for i in range(len(useful) - 1)
-        ):
-            useful = useful[:size]
-            break
-    return "\n".join(useful).strip()
+    if useful and _NO_TEXT.search(" ".join(useful[:2])):
+        return ""
+    return "\n".join(_cut_repetition(useful)).strip()
 
 
 def ocr_image_ollama(
@@ -134,6 +171,22 @@ def unload_model(model: str | None = None, url: str | None = None) -> None:
             pass
     except (urllib.error.URLError, OSError):
         pass
+
+
+def frame_is_blank(image_path: Path, min_stddev: float = 12.0) -> bool:
+    """Frame quase uniforme (preto, fade, tela lisa): nao vale mandar para o OCR.
+
+    Modelos de visao inventam texto nesses frames. Sem Pillow devolve False.
+    """
+    try:
+        from PIL import Image, ImageStat
+    except ImportError:
+        return False
+    try:
+        with Image.open(image_path) as img:
+            return ImageStat.Stat(img.convert("L")).stddev[0] < min_stddev
+    except OSError:
+        return False
 
 
 def frame_signature(image_path: Path) -> int | None:

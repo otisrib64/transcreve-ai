@@ -32,6 +32,7 @@ from .media import (
 from .models import AnalysisResult, FrameObservation, KnowledgeSynthesis
 from .ocr import OcrResult, choose_language, ocr_code_layout, ocr_image_detailed
 from .ocr_ollama import (
+    frame_is_blank,
     frame_signature,
     ocr_image_ollama,
     ollama_available,
@@ -86,7 +87,7 @@ class PipelineOptions:
     frame_strategy: str = "auto"
     # "tesseract" (padrao) | "ollama" - ver video_kb/ocr_ollama.py.
     ocr_engine: str = field(default_factory=lambda: os.environ.get("VIDEO_KB_OCR_ENGINE", "tesseract"))
-    ocr_model: str = ""  # vazio = VIDEO_KB_OCR_MODEL ou deepseek-ocr:3b
+    ocr_model: str = ""  # vazio = VIDEO_KB_OCR_MODEL ou glm-ocr
     # --- callback opcional de progresso (web UI) ---
     # Assinatura: on_progress(step: str, detail: str) -> None
     # Default None: comportamento identico ao anterior (so prints)
@@ -305,6 +306,9 @@ class VideoKnowledgePipeline:
                 if same_frame(signature, last_signature):
                     ocr_text, ocr_raw = last_ocr
                     reused += 1
+                elif frame_is_blank(frame_path):
+                    ocr_text, ocr_raw = "", ""
+                    last_signature, last_ocr = signature, OcrResult("", "")
                 else:
                     try:
                         ocr_text, ocr_raw = ocr_image_ollama(frame_path, ocr_model)
