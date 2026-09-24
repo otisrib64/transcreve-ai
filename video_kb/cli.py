@@ -115,7 +115,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--ocr-engine",
         choices=("tesseract", "ollama"),
         default=None,
-        help="Motor de OCR: tesseract (padrao) ou ollama (modelo de visao local). Sobreescreve VIDEO_KB_OCR_ENGINE.",
+        help=(
+            "Motor de OCR: tesseract (padrao) ou ollama (modelo de visao local). "
+            "Sobreescreve VIDEO_KB_OCR_ENGINE."
+        ),
     )
     agent_run.add_argument(
         "--ocr-model",
@@ -215,7 +218,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--ocr-engine",
         choices=("tesseract", "ollama"),
         default=None,
-        help="Motor de OCR: tesseract (padrao) ou ollama (modelo de visao local). Sobreescreve VIDEO_KB_OCR_ENGINE.",
+        help=(
+            "Motor de OCR: tesseract (padrao) ou ollama (modelo de visao local). "
+            "Sobreescreve VIDEO_KB_OCR_ENGINE."
+        ),
     )
     agent_batch.add_argument(
         "--ocr-model",
@@ -317,7 +323,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--ocr-engine",
         choices=("tesseract", "ollama"),
         default=None,
-        help="Motor de OCR: tesseract (padrao) ou ollama (modelo de visao local). Sobreescreve VIDEO_KB_OCR_ENGINE.",
+        help=(
+            "Motor de OCR: tesseract (padrao) ou ollama (modelo de visao local). "
+            "Sobreescreve VIDEO_KB_OCR_ENGINE."
+        ),
     )
     analyze.add_argument(
         "--ocr-model",

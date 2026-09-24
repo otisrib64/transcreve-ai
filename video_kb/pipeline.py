@@ -86,7 +86,9 @@ class PipelineOptions:
     # "auto" | "slides" | "interval" - ver _should_detect_slides().
     frame_strategy: str = "auto"
     # "tesseract" (padrao) | "ollama" - ver video_kb/ocr_ollama.py.
-    ocr_engine: str = field(default_factory=lambda: os.environ.get("VIDEO_KB_OCR_ENGINE", "tesseract"))
+    ocr_engine: str = field(
+        default_factory=lambda: os.environ.get("VIDEO_KB_OCR_ENGINE", "tesseract")
+    )
     ocr_model: str = ""  # vazio = VIDEO_KB_OCR_MODEL ou glm-ocr
     # --- callback opcional de progresso (web UI) ---
     # Assinatura: on_progress(step: str, detail: str) -> None

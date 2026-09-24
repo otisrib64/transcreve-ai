@@ -22,7 +22,9 @@ def test_clean_ocr_output_keeps_normal_text_and_indent():
 
 
 def test_clean_ocr_output_cuts_repetition_in_the_middle():
-    raw = "CUPOM\n---\nItem A 10\nItem B 20\nTOTAL 30\n---\nItem A 10\nItem B 20\nTOTAL 30\n---\nItem"
+    raw = (
+        "CUPOM\n---\nItem A 10\nItem B 20\nTOTAL 30\n---\nItem A 10\nItem B 20\nTOTAL 30\n---\nItem"
+    )
     assert ocr_ollama.clean_ocr_output(raw) == "CUPOM\n---\nItem A 10\nItem B 20\nTOTAL 30"
 
 

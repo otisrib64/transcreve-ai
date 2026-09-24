@@ -1,6 +1,7 @@
 import json
 import math
 import re
+import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -261,6 +262,20 @@ def extract_frames(
     digits = max(4, int(math.log10(max(1, max_index))) + 1)
 
     suffix = "png" if str(image_format).lower() == "png" else "jpg"
+    if timestamps is None and len(sampled) > _SINGLE_PASS_MIN_FRAMES:
+        fast = _extract_frames_single_pass(
+            media_path,
+            frames_dir,
+            sampled,
+            _effective_frame_interval(duration, interval),
+            width,
+            start_index,
+            digits,
+            timestamp_offset,
+            suffix,
+        )
+        if fast:
+            return fast
     for index, timestamp in enumerate(sampled, start=start_index):
         output = frames_dir / (
             f"frame_{index:0{digits}d}_{_safe_ts(timestamp + timestamp_offset)}.{suffix}"
@@ -286,6 +301,56 @@ def extract_frames(
             continue
         if output.exists() and output.stat().st_size > 0:
             frame_paths.append(output)
+    return frame_paths
+
+
+# Acima disso (amostragem densa, ex.: 1 fps sem limite de frames) um unico ffmpeg
+# decodificando o video inteiro e bem mais rapido que um ffmpeg com seek por frame.
+# Abaixo, o caminho por frame continua (e o padrao de 80 frames nunca chega aqui).
+_SINGLE_PASS_MIN_FRAMES = 120
+
+
+def _extract_frames_single_pass(
+    media_path: Path,
+    frames_dir: Path,
+    sampled: Sequence[float],
+    interval: float,
+    width: int,
+    start_index: int,
+    digits: int,
+    timestamp_offset: float,
+    suffix: str,
+) -> list[Path]:
+    """Extrai todos os frames com um so ffmpeg (filtro fps). Lista vazia = falhou."""
+    tmp_dir = ensure_dir(frames_dir / ".single_pass")
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(media_path),
+        "-vf",
+        # round=up alinha com o seek por frame (-ss pega o primeiro frame >= t).
+        f"fps=1/{interval}:round=up,scale={width}:-2",
+    ]
+    if suffix == "jpg":
+        command += ["-q:v", "3"]
+    command.append(str(tmp_dir / f"%07d.{suffix}"))
+    try:
+        run_command(command)
+    except CommandError:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return []
+    produced = sorted(tmp_dir.glob(f"*.{suffix}"))
+    frame_paths = []
+    # O filtro fps emite o frame n no instante n*interval, igual a _sample_timestamps.
+    for index, (timestamp, src) in enumerate(zip(sampled, produced), start=start_index):
+        output = frames_dir / (
+            f"frame_{index:0{digits}d}_{_safe_ts(timestamp + timestamp_offset)}.{suffix}"
+        )
+        src.replace(output)
+        if output.stat().st_size > 0:
+            frame_paths.append(output)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
     return frame_paths
 
 

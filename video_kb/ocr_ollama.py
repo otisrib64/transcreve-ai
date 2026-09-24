@@ -60,7 +60,9 @@ def ollama_ocr_model() -> str:
     return os.environ.get("VIDEO_KB_OCR_MODEL", DEFAULT_OCR_MODEL)
 
 
-def ollama_available(url: str | None = None, model: str | None = None, timeout: float = 3.0) -> tuple[bool, str]:
+def ollama_available(
+    url: str | None = None, model: str | None = None, timeout: float = 3.0
+) -> tuple[bool, str]:
     """Confere se o servidor responde e se o modelo esta baixado."""
     base = url or ollama_url()
     try:
@@ -69,7 +71,9 @@ def ollama_available(url: str | None = None, model: str | None = None, timeout: 
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return False, f"Ollama indisponivel em {base}: {exc}"
     if model:
-        names = {m.get("name") for m in tags.get("models", [])} | {m.get("model") for m in tags.get("models", [])}
+        names = {m.get("name") for m in tags.get("models", [])} | {
+            m.get("model") for m in tags.get("models", [])
+        }
         wanted = {model, f"{model}:latest"}
         if not names & wanted:
             return False, f"Modelo '{model}' nao encontrado no Ollama (rode: ollama pull {model})"
@@ -86,7 +90,9 @@ def _cut_repetition(lines: list[str]) -> list[str]:
             # Linha unica so conta como loop se repetir 3+ vezes seguidas.
             if size == 1 and lines[start + 1 : start + 3] != block * 2:
                 continue
-            if nxt == block or (start + 2 * size >= n - 1 and nxt[:-1] == block[: len(nxt) - 1] and len(nxt) > 1):
+            if nxt == block or (
+                start + 2 * size >= n - 1 and nxt[:-1] == block[: len(nxt) - 1] and len(nxt) > 1
+            ):
                 return lines[: start + size]
     return lines
 
