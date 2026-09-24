@@ -30,16 +30,8 @@ from .media import (
     probe_duration,
 )
 from .models import AnalysisResult, FrameObservation, KnowledgeSynthesis
-from .ocr import OcrResult, choose_language, ocr_code_layout, ocr_image_detailed
-from .ocr_ollama import (
-    frame_is_blank,
-    frame_signature,
-    ocr_image_ollama,
-    ollama_available,
-    ollama_ocr_model,
-    same_frame,
-    unload_model,
-)
+from .ocr import choose_language, ocr_code_layout, ocr_image_detailed
+from .ocr_ollama import OcrBatch, ocr_frames, ollama_available, ollama_ocr_model, unload_model
 from .providers import (
     CapabilityNotSupported,
     SynthesisContext,
@@ -296,36 +288,28 @@ class VideoKnowledgePipeline:
                 warnings.append(f"{reason}; usando tesseract.")
                 ocr_engine = "tesseract"
         frames = []
-        # Frames praticamente iguais ao anterior reaproveitam o OCR dele: com
-        # amostragem densa (1 fps) a maioria dos frames repete a mesma tela.
-        last_signature: int | None = None
-        last_ocr = OcrResult("", "")
-        reused = 0
-        for frame_path in frame_paths:
+        # Via Ollama: frames praticamente iguais ao anterior reaproveitam o OCR
+        # dele (com 1 fps a maioria repete a mesma tela), frames lisos sao pulados
+        # e os unicos sao lidos em paralelo (VIDEO_KB_OCR_WORKERS).
+        batch: OcrBatch | None = None
+        if ocr_engine == "ollama":
+
+            def _ocr_progress(done: int, total: int) -> None:
+                if done % 50 == 0 or done == total:
+                    _emit("ocr", f"OCR: {done}/{total} frames unicos lidos.")
+
+            batch = ocr_frames(frame_paths, ocr_model, on_progress=_ocr_progress)
+            if batch.error:
+                warnings.append(f"{batch.error}; usando tesseract nos frames restantes.")
+        for index, frame_path in enumerate(frame_paths):
             timestamp = _timestamp_from_frame_name(frame_path.name)
-            if ocr_engine == "ollama":
-                signature = frame_signature(frame_path)
-                if same_frame(signature, last_signature):
-                    ocr_text, ocr_raw = last_ocr
-                    reused += 1
-                elif frame_is_blank(frame_path):
-                    ocr_text, ocr_raw = "", ""
-                    last_signature, last_ocr = signature, OcrResult("", "")
-                else:
-                    try:
-                        ocr_text, ocr_raw = ocr_image_ollama(frame_path, ocr_model)
-                    except Exception as exc:  # noqa: BLE001
-                        warnings.append(
-                            f"OCR via Ollama falhou em {frame_path.name}: {exc}; "
-                            "usando tesseract no restante do video."
-                        )
-                        ocr_engine = "tesseract"
-                        ocr_text, ocr_raw = ocr_image_detailed(frame_path, ocr_lang)
-                    last_signature, last_ocr = signature, OcrResult(ocr_text, ocr_raw)
+            from_vision = batch is not None and batch.results[index] is not None
+            if from_vision:
+                ocr_text, ocr_raw = batch.results[index]  # type: ignore[misc]
             else:
                 ocr_text, ocr_raw = ocr_image_detailed(frame_path, ocr_lang)
             code = extract_code_block(ocr_raw)
-            if code and ocr_engine != "ollama":
+            if code and not from_vision:
                 # Segunda leitura, so nos frames que tem codigo: recupera a
                 # indentacao pelas coordenadas, que o modo texto nao devolve.
                 # O modelo de visao ja devolve a indentacao no texto bruto.
@@ -343,9 +327,14 @@ class VideoKnowledgePipeline:
                     code=code,
                 )
             )
-        if reused:
-            _emit("ocr", f"{reused} frames repetidos reaproveitaram o OCR do frame anterior.")
-        if ocr_engine == "ollama":
+        if batch is not None:
+            if batch.reused:
+                _emit(
+                    "ocr",
+                    f"{batch.reused} frames repetidos reaproveitaram o OCR do frame anterior.",
+                )
+            if batch.blank:
+                _emit("ocr", f"{batch.blank} frames lisos/escuros pulados (sem texto).")
             unload_model(ocr_model)
         code_frames = sum(1 for frame in frames if frame.code)
         if code_frames:

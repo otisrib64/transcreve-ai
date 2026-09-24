@@ -134,3 +134,48 @@ def test_cli_passes_ocr_flags_only_when_given():
         "ocr_engine": "ollama",
         "ocr_model": "m",
     }
+
+
+def _png(path: Path, kind: str) -> Path:
+    from PIL import Image
+
+    img = Image.new("RGB", (64, 64), "black" if kind == "blank" else "white")
+    if kind != "blank":
+        step = 3 if kind == "a" else 7
+        for x in range(0, 64, step):
+            for y in range(64):
+                img.putpixel((x, y), (0, 0, 0))
+    img.save(path)
+    return path
+
+
+def test_ocr_frames_plans_reuse_blank_and_reads_unique(tmp_path: Path, monkeypatch):
+    frames = [
+        _png(tmp_path / "1.png", "a"),
+        _png(tmp_path / "2.png", "a"),
+        _png(tmp_path / "3.png", "blank"),
+        _png(tmp_path / "4.png", "b"),
+    ]
+    calls = []
+
+    def fake(path, model=None):
+        calls.append(path.name)
+        return OcrResult(f"txt {path.name}", f"txt {path.name}")
+
+    monkeypatch.setattr(ocr_ollama, "ocr_image_ollama", fake)
+    batch = ocr_ollama.ocr_frames(frames, "m", workers=2)
+    assert sorted(calls) == ["1.png", "4.png"]
+    assert [r.text for r in batch.results] == ["txt 1.png", "txt 1.png", "", "txt 4.png"]
+    assert (batch.reused, batch.blank, batch.error) == (1, 1, "")
+
+
+def test_ocr_frames_failure_leaves_none_for_fallback(tmp_path: Path, monkeypatch):
+    frames = [_png(tmp_path / "1.png", "a"), _png(tmp_path / "2.png", "b")]
+
+    def boom(path, model=None):
+        raise OSError("conexao recusada")
+
+    monkeypatch.setattr(ocr_ollama, "ocr_image_ollama", boom)
+    batch = ocr_ollama.ocr_frames(frames, "m", workers=1)
+    assert batch.results == [None, None]
+    assert "conexao recusada" in batch.error

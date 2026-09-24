@@ -20,6 +20,9 @@ import os
 import re
 import urllib.error
 import urllib.request
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 from .ocr import OcrResult
@@ -222,3 +225,77 @@ def same_frame(a: int | None, b: int | None, max_distance: int = 6) -> bool:
     if a is None or b is None:
         return False
     return (a ^ b).bit_count() <= max_distance
+
+
+@dataclass
+class OcrBatch:
+    """Resultado do OCR de uma sequencia de frames via Ollama.
+
+    `results[i]` e None para frames que ficaram sem leitura porque o Ollama
+    falhou (`error` explica); quem chama faz o fallback nesses frames.
+    """
+
+    results: list[OcrResult | None]
+    reused: int = 0
+    blank: int = 0
+    error: str = ""
+
+
+def ocr_frames(
+    frame_paths: list[Path],
+    model: str | None = None,
+    workers: int | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> OcrBatch:
+    """OCR de todos os frames: pula lisos, reaproveita repetidos e paraleliza o resto.
+
+    O plano (qual frame reaproveita qual) e sequencial e barato; so os frames
+    unicos vao ao modelo, `workers` por vez (VIDEO_KB_OCR_WORKERS, padrao 1).
+    Para paralelismo real o servidor precisa de OLLAMA_NUM_PARALLEL >= workers.
+    """
+    workers = max(1, workers or int(os.environ.get("VIDEO_KB_OCR_WORKERS", "1")))
+    # plan[i] = indice do frame cuja leitura o frame i usa, ou None se for liso.
+    plan: list[int | None] = []
+    last_signature: int | None = None
+    last_rep: int | None = None
+    reused = blank = 0
+    for i, path in enumerate(frame_paths):
+        signature = frame_signature(path)
+        if same_frame(signature, last_signature):
+            plan.append(last_rep)
+            reused += 1
+        elif frame_is_blank(path):
+            plan.append(None)
+            blank += 1
+            last_signature, last_rep = signature, None
+        else:
+            plan.append(i)
+            last_signature, last_rep = signature, i
+
+    reps = [i for i, rep in enumerate(plan) if rep == i]
+    read: dict[int, OcrResult] = {}
+    error = ""
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(ocr_image_ollama, frame_paths[i], model): i for i in reps}
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                read[i] = future.result()
+            except Exception as exc:  # noqa: BLE001
+                if not error:
+                    error = f"OCR via Ollama falhou em {frame_paths[i].name}: {exc}"
+                    for pending in futures:
+                        pending.cancel()
+                continue
+            done += 1
+            if on_progress:
+                on_progress(done, len(reps))
+
+    results: list[OcrResult | None] = []
+    for rep in plan:
+        if rep is None:
+            results.append(OcrResult("", ""))
+        else:
+            results.append(read.get(rep))
+    return OcrBatch(results=results, reused=reused, blank=blank, error=error)
