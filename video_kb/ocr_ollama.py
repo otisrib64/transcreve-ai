@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .ocr import OcrResult
@@ -227,6 +227,9 @@ def same_frame(a: int | None, b: int | None, max_distance: int = 6) -> bool:
     return (a ^ b).bit_count() <= max_distance
 
 
+_MAX_CONSECUTIVE_FAILURES = 5
+
+
 @dataclass
 class OcrBatch:
     """Resultado do OCR de uma sequencia de frames via Ollama.
@@ -239,6 +242,7 @@ class OcrBatch:
     reused: int = 0
     blank: int = 0
     error: str = ""
+    failed: list[str] = field(default_factory=list)  # frames que ficaram sem leitura
 
 
 def ocr_frames(
@@ -274,17 +278,37 @@ def ocr_frames(
 
     reps = [i for i, rep in enumerate(plan) if rep == i]
     read: dict[int, OcrResult] = {}
+    failures: list[str] = []
     error = ""
     done = 0
+    consecutive = 0
+
+    def _read(i: int) -> OcrResult:
+        # Uma nova tentativa: o Ollama as vezes devolve HTTP 500 num frame isolado.
+        try:
+            return ocr_image_ollama(frame_paths[i], model)
+        except Exception:  # noqa: BLE001
+            return ocr_image_ollama(frame_paths[i], model)
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(ocr_image_ollama, frame_paths[i], model): i for i in reps}
+        futures = {pool.submit(_read, i): i for i in reps}
         for future in as_completed(futures):
             i = futures[future]
+            if future.cancelled():
+                continue
             try:
                 read[i] = future.result()
+                consecutive = 0
             except Exception as exc:  # noqa: BLE001
-                if not error:
-                    error = f"OCR via Ollama falhou em {frame_paths[i].name}: {exc}"
+                # Frame isolado fica sem leitura (quem chama usa o tesseract nele).
+                # So desiste do Ollama se falhar varias vezes seguidas.
+                failures.append(frame_paths[i].name)
+                consecutive += 1
+                if consecutive >= _MAX_CONSECUTIVE_FAILURES and not error:
+                    error = (
+                        f"OCR via Ollama falhou {consecutive} vezes seguidas "
+                        f"(ultimo: {frame_paths[i].name}: {exc})"
+                    )
                     for pending in futures:
                         pending.cancel()
                 continue
@@ -298,4 +322,4 @@ def ocr_frames(
             results.append(OcrResult("", ""))
         else:
             results.append(read.get(rep))
-    return OcrBatch(results=results, reused=reused, blank=blank, error=error)
+    return OcrBatch(results=results, reused=reused, blank=blank, error=error, failed=failures)

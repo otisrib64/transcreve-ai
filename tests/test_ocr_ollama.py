@@ -178,4 +178,33 @@ def test_ocr_frames_failure_leaves_none_for_fallback(tmp_path: Path, monkeypatch
     monkeypatch.setattr(ocr_ollama, "ocr_image_ollama", boom)
     batch = ocr_ollama.ocr_frames(frames, "m", workers=1)
     assert batch.results == [None, None]
-    assert "conexao recusada" in batch.error
+    assert batch.failed == ["1.png", "2.png"]
+    assert batch.error == ""  # poucas falhas: nao desiste do Ollama
+
+
+def test_ocr_frames_isolated_failure_is_retried_then_skipped(tmp_path: Path, monkeypatch):
+    frames = [_png(tmp_path / "1.png", "a"), _png(tmp_path / "2.png", "b")]
+    calls = {"1.png": 0}
+
+    def flaky(path, model=None):
+        if path.name == "1.png":
+            calls["1.png"] += 1
+            if calls["1.png"] == 1:
+                raise OSError("HTTP Error 500")
+        return OcrResult(f"ok {path.name}", f"ok {path.name}")
+
+    monkeypatch.setattr(ocr_ollama, "ocr_image_ollama", flaky)
+    batch = ocr_ollama.ocr_frames(frames, "m", workers=1)
+    assert [r.text for r in batch.results] == ["ok 1.png", "ok 2.png"]
+    assert batch.failed == [] and calls["1.png"] == 2
+
+
+def test_ocr_frames_gives_up_after_consecutive_failures(tmp_path: Path, monkeypatch):
+    frames = [_png(tmp_path / f"{i}.png", "a" if i % 2 else "b") for i in range(8)]
+
+    def boom(path, model=None):
+        raise OSError("conexao recusada")
+
+    monkeypatch.setattr(ocr_ollama, "ocr_image_ollama", boom)
+    batch = ocr_ollama.ocr_frames(frames, "m", workers=1)
+    assert "seguidas" in batch.error and "conexao recusada" in batch.error

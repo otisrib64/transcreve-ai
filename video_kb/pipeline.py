@@ -301,6 +301,11 @@ class VideoKnowledgePipeline:
             batch = ocr_frames(frame_paths, ocr_model, on_progress=_ocr_progress)
             if batch.error:
                 warnings.append(f"{batch.error}; usando tesseract nos frames restantes.")
+            elif batch.failed:
+                warnings.append(
+                    f"OCR via Ollama falhou em {len(batch.failed)} frame(s) "
+                    f"({', '.join(batch.failed[:5])}); tesseract usado neles."
+                )
         for index, frame_path in enumerate(frame_paths):
             timestamp = _timestamp_from_frame_name(frame_path.name)
             from_vision = batch is not None and batch.results[index] is not None
