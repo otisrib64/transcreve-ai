@@ -221,10 +221,17 @@ def frame_is_blank(image_path: Path, min_stddev: float = 12.0) -> bool:
         return False
 
 
-def frame_signature(image_path: Path) -> int | None:
-    """dHash de 256 bits do frame, para achar frames praticamente iguais.
+_SIGNATURE_WIDTH = 640
+_PIXEL_DELTA = 48  # acima do ruido de JPEG
+_MAX_CHANGED_PIXELS = 24  # uma linha nova de codigo muda ~60 px nessa escala
 
-    Requer Pillow (extra `ollama`); sem ele devolve None e nada e deduplicado.
+
+def frame_signature(image_path: Path):
+    """Frame reduzido a 640 px em tons de cinza, para comparar com o anterior.
+
+    Uma impressao digital de 16x16 (dHash) nao enxergava uma linha de codigo
+    nova num screencast e o OCR ficava desatualizado. Comparar pixels em 640 px
+    pega a digitacao. Requer Pillow (extra `ollama`); sem ele devolve None.
     """
     try:
         from PIL import Image
@@ -232,25 +239,35 @@ def frame_signature(image_path: Path) -> int | None:
         return None
     try:
         with Image.open(image_path) as img:
-            small = img.convert("L").resize((17, 16), Image.BILINEAR)
-            px = list(small.getdata())
+            gray = img.convert("L")
+            height = max(1, round(gray.height * _SIGNATURE_WIDTH / gray.width))
+            return gray.resize((_SIGNATURE_WIDTH, height), Image.BILINEAR)
     except OSError:
         return None
-    bits = 0
-    for row in range(16):
-        for col in range(16):
-            left, right = px[row * 17 + col], px[row * 17 + col + 1]
-            bits = (bits << 1) | (left > right)
-    return bits
 
 
-def same_frame(a: int | None, b: int | None, max_distance: int = 6) -> bool:
-    if a is None or b is None:
+def same_frame(a, b, max_changed: int = _MAX_CHANGED_PIXELS) -> bool:
+    """Mesma tela se no maximo `max_changed` pixels mudaram de verdade."""
+    if a is None or b is None or a.size != b.size:
         return False
-    return (a ^ b).bit_count() <= max_distance
+    from PIL import ImageChops
+
+    diff = ImageChops.difference(a, b).point(lambda v: 255 if v > _PIXEL_DELTA else 0)
+    changed = diff.histogram()[255]
+    return changed <= max_changed
 
 
 _MAX_CONSECUTIVE_FAILURES = 5
+_MAX_REUSE_SECONDS = 10.0  # mesmo parecendo igual, rele a tela pelo menos a cada 10 s
+_FRAME_TIME = re.compile(r"_(\d+)s(\d+)\.[a-z]+$")
+
+
+def _frame_time(path: Path) -> float | None:
+    """Instante do frame pelo nome (frame_0012_00011s00.jpg -> 11.0)."""
+    match = _FRAME_TIME.search(path.name)
+    return float(f"{match.group(1)}.{match.group(2)}") if match else None
+
+
 _CHUNK = 200  # frames unicos por bloco antes de descarregar o modelo
 
 
@@ -284,12 +301,19 @@ def ocr_frames(
     workers = max(1, workers or int(os.environ.get("VIDEO_KB_OCR_WORKERS", "1")))
     # plan[i] = indice do frame cuja leitura o frame i usa, ou None se for liso.
     plan: list[int | None] = []
-    last_signature: int | None = None
+    last_signature = None
     last_rep: int | None = None
     reused = blank = 0
+    last_rep_time: float | None = None
     for i, path in enumerate(frame_paths):
         signature = frame_signature(path)
-        if same_frame(signature, last_signature):
+        timestamp = _frame_time(path)
+        stale = (
+            last_rep_time is not None
+            and timestamp is not None
+            and timestamp - last_rep_time >= _MAX_REUSE_SECONDS
+        )
+        if same_frame(signature, last_signature) and not stale:
             plan.append(last_rep)
             reused += 1
         elif frame_is_blank(path):
@@ -299,6 +323,7 @@ def ocr_frames(
         else:
             plan.append(i)
             last_signature, last_rep = signature, i
+            last_rep_time = timestamp
 
     reps = [i for i, rep in enumerate(plan) if rep == i]
     read: dict[int, OcrResult] = {}

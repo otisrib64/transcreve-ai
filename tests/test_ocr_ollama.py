@@ -60,10 +60,45 @@ def test_frame_is_blank(tmp_path: Path):
     assert not ocr_ollama.frame_is_blank(texto)
 
 
-def test_same_frame_threshold():
-    assert ocr_ollama.same_frame(0b1011, 0b1010)
-    assert not ocr_ollama.same_frame(0, (1 << 20) - 1)
-    assert not ocr_ollama.same_frame(None, 1)
+def test_same_frame_threshold(tmp_path: Path):
+    from PIL import Image
+
+    a = Image.new("L", (640, 360), 255)
+    b = a.copy()
+    for x in range(10):  # 10 pixels mudaram: ainda a mesma tela
+        b.putpixel((x, 0), 0)
+    c = a.copy()
+    for x in range(100):  # 100 pixels (uma linha de texto nova): tela diferente
+        c.putpixel((x, 5), 0)
+    assert ocr_ollama.same_frame(a, b)
+    assert not ocr_ollama.same_frame(a, c)
+    assert not ocr_ollama.same_frame(None, a)
+
+
+def test_same_frame_detects_new_line_of_code(tmp_path: Path):
+    from PIL import Image, ImageDraw
+
+    antes = Image.new("RGB", (1280, 720), "white")
+    ImageDraw.Draw(antes).text((20, 20), ">>> any([False, True])", fill="black")
+    depois = antes.copy()
+    ImageDraw.Draw(depois).text((20, 40), ">>> any([0, [], ''])", fill="black")
+    antes.save(tmp_path / "a.png")
+    depois.save(tmp_path / "b.png")
+    sa = ocr_ollama.frame_signature(tmp_path / "a.png")
+    sb = ocr_ollama.frame_signature(tmp_path / "b.png")
+    assert not ocr_ollama.same_frame(sa, sb)
+
+
+def test_ocr_frames_rereads_static_screen_every_10_seconds(tmp_path: Path, monkeypatch):
+    frames = [_png(tmp_path / f"frame_{i:04d}_{i:05d}s00.png", "a") for i in range(25)]
+    calls = []
+    monkeypatch.setattr(
+        ocr_ollama,
+        "ocr_image_ollama",
+        lambda p, m=None: calls.append(p.name) or OcrResult("x", "x"),
+    )
+    ocr_ollama.ocr_frames(frames, "m", workers=1)
+    assert len(calls) == 3  # 0 s, 10 s, 20 s
 
 
 def test_frame_signature_detects_identical_images(tmp_path: Path):
