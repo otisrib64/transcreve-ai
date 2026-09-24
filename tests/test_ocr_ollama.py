@@ -1,5 +1,4 @@
 from pathlib import Path
-from unittest import mock
 
 from video_kb import ocr_ollama
 from video_kb.ocr import OcrResult
@@ -95,33 +94,95 @@ def test_pipeline_options_default_engine_is_tesseract(monkeypatch):
     assert PipelineOptions(out_dir=Path("x")).ocr_engine == "ollama"
 
 
-def test_ocr_image_ollama_sends_model_prompt_and_stop(tmp_path: Path):
+class _FakeStream:
+    """Resposta NDJSON do /api/generate em streaming."""
+
+    def __init__(self, chunks):
+        import json
+
+        self._lines = [json.dumps(c).encode() + b"\n" for c in chunks]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+def _patch_urlopen(monkeypatch, chunks, captured=None):
+    import json
+
+    def fake_urlopen(req, timeout):
+        if captured is not None:
+            captured.update(json.loads(req.data))
+        return _FakeStream(chunks)
+
+    monkeypatch.setattr(ocr_ollama.urllib.request, "urlopen", fake_urlopen)
+
+
+def test_ocr_image_ollama_sends_model_prompt_and_stop(tmp_path: Path, monkeypatch):
     img = tmp_path / "f.png"
     img.write_bytes(b"\x89PNG fake")
     captured = {}
-
-    class Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def read(self):
-            return b'{"response": "Texto\\n```\\nTexto\\nTexto"}'
-
-    def fake_urlopen(req, timeout):
-        import json
-
-        captured.update(json.loads(req.data))
-        return Resp()
-
-    with mock.patch.object(ocr_ollama.urllib.request, "urlopen", fake_urlopen):
-        result = ocr_ollama.ocr_image_ollama(img, model="glm-ocr", url="http://x")
+    _patch_urlopen(
+        monkeypatch,
+        [{"response": "Texto\n```\n"}, {"response": "Texto\nTexto", "done": True}],
+        captured,
+    )
+    result = ocr_ollama.ocr_image_ollama(img, model="glm-ocr", url="http://x")
     assert result == OcrResult("Texto", "Texto")
     assert captured["prompt"] == "Text Recognition:"
+    assert captured["stream"] is True
     assert "```" in captured["options"]["stop"]
     assert "think" not in captured
+
+
+def test_ocr_image_ollama_keeps_partial_text_when_ollama_aborts_repetition(
+    tmp_path: Path, monkeypatch
+):
+    img = tmp_path / "f.png"
+    img.write_bytes(b"x")
+    _patch_urlopen(
+        monkeypatch,
+        [
+            {"response": "SPEC.md\nCONTRACT.md\n"},
+            {"response": "F F F F F F F F"},
+            {"error": "prediction aborted, token repeat limit reached"},
+        ],
+    )
+    result = ocr_ollama.ocr_image_ollama(img, model="glm-ocr", url="http://x")
+    assert result.text == "SPEC.md\nCONTRACT.md\nF"
+
+
+def test_ocr_image_ollama_raises_model_error_without_text(tmp_path: Path, monkeypatch):
+    import pytest
+
+    img = tmp_path / "f.png"
+    img.write_bytes(b"x")
+    _patch_urlopen(monkeypatch, [{"error": "model failed to load"}])
+    with pytest.raises(ocr_ollama.OllamaModelError):
+        ocr_ollama.ocr_image_ollama(img, model="glm-ocr", url="http://x")
+
+
+def test_ocr_frames_model_errors_do_not_abandon_ollama(tmp_path: Path, monkeypatch):
+    frames = [_png(tmp_path / f"{i}.png", "a" if i % 2 else "b") for i in range(8)]
+
+    def model_error(path, model=None):
+        raise ocr_ollama.OllamaModelError("prediction aborted")
+
+    monkeypatch.setattr(ocr_ollama, "ocr_image_ollama", model_error)
+    monkeypatch.setattr(ocr_ollama.time, "sleep", lambda s: None)
+    batch = ocr_ollama.ocr_frames(frames, "m", workers=1)
+    assert batch.error == ""
+    assert len(batch.failed) == 8
+
+
+def test_clean_ocr_output_collapses_repeated_token_in_line():
+    assert ocr_ollama.clean_ocr_output("SPEC.md F F F F F F F") == "SPEC.md F"
+    assert ocr_ollama.clean_ocr_output("1 2 3 4 5") == "1 2 3 4 5"
 
 
 def test_cli_passes_ocr_flags_only_when_given():

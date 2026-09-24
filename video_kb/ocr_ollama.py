@@ -48,12 +48,17 @@ _OCR_ONLY_MODELS = set(_PROMPTS)
 _GROUNDING_TAG = re.compile(r"<\|(?:ref|det|/ref|/det)\|>.*?(?=<\||$)|<\|[a-z_/]+\|>", re.S)
 _FENCE = re.compile(r"^```[a-z]*\s*$", re.M)
 _HTML_TAG = re.compile(r"<[^>]+>")
+_REPEATED_TOKEN = re.compile(r"(\S+)(?:\s+\1){4,}")
 # Frases que o modelo escreve quando nao ha texto legivel (nao sao OCR).
 _NO_TEXT = re.compile(
     r"(the image (provided )?(is|appears)|no (discernible|legible|readable) text|"
     r"i will provide a description|nao ha texto|não há texto|sem texto legivel)",
     re.I,
 )
+
+
+class OllamaModelError(RuntimeError):
+    """O servidor respondeu, mas o modelo falhou neste frame (nao e queda do servidor)."""
 
 
 def ollama_url() -> str:
@@ -125,6 +130,8 @@ def clean_ocr_output(text: str) -> str:
         text = _table_to_text(text)
     text = _HTML_TAG.sub("", text)
     lines = [line.rstrip() for line in text.splitlines()]
+    # "F F F F F ..." dentro de uma linha: fica uma ocorrencia so.
+    lines = [_REPEATED_TOKEN.sub(r"\1", line) for line in lines]
     useful = [line for line in lines if line.strip()]
     if useful and _NO_TEXT.search(" ".join(useful[:2])):
         return ""
@@ -152,7 +159,9 @@ def ocr_image_ollama(
         "model": model,
         "prompt": _PROMPTS.get(base_name, _GENERIC_PROMPT),
         "images": [base64.b64encode(image_path.read_bytes()).decode()],
-        "stream": False,
+        # Em streaming: quando o Ollama aborta por repeticao ("token repeat limit
+        # reached", HTTP 500 sem streaming), o texto lido ate ali e preservado.
+        "stream": True,
         "keep_alive": os.environ.get("VIDEO_KB_OLLAMA_KEEP_ALIVE", "5m"),
         "options": options,
     }
@@ -163,9 +172,20 @@ def ocr_image_ollama(
         json.dumps(payload).encode(),
         {"Content-Type": "application/json"},
     )
+    pieces: list[str] = []
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = json.load(resp)
-    raw = clean_ocr_output(body.get("response", ""))
+        for line in resp:
+            if not line.strip():
+                continue
+            chunk = json.loads(line)
+            if "error" in chunk:
+                if "repeat" in str(chunk["error"]).lower() and pieces:
+                    break  # modelo entrou em loop: fica com o que veio antes
+                raise OllamaModelError(str(chunk["error"]))
+            pieces.append(chunk.get("response", ""))
+            if chunk.get("done"):
+                break
+    raw = clean_ocr_output("".join(pieces))
     text = "\n".join(line.strip() for line in raw.splitlines() if line.strip())
     return OcrResult(text, raw)
 
@@ -352,8 +372,11 @@ def _ocr_chunk(
                 consecutive = 0
             except Exception as exc:  # noqa: BLE001
                 # Frame isolado fica sem leitura (quem chama usa o tesseract nele).
-                # So desiste do Ollama se falhar varias vezes seguidas.
+                # So desiste do Ollama se o SERVIDOR falhar varias vezes seguidas;
+                # erro do modelo num frame (HTTP 500, loop) conta so para o frame.
                 failures.append(frame_paths[i].name)
+                if isinstance(exc, (OllamaModelError, urllib.error.HTTPError)):
+                    continue
                 consecutive += 1
                 if consecutive >= _MAX_CONSECUTIVE_FAILURES and not error:
                     error = (
