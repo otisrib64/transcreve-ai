@@ -143,7 +143,9 @@ def ocr_image_ollama(
     """
     model = model or ollama_ocr_model()
     base_name = model.split(":")[0]
-    options: dict = {"temperature": 0, "num_predict": 1024, "num_ctx": 8192}
+    # ~1.200 tokens de imagem + ate 1.024 de resposta cabem em 4096; contexto maior
+    # multiplica a memoria por slot quando o Ollama roda com NUM_PARALLEL > 1.
+    options: dict = {"temperature": 0, "num_predict": 1024, "num_ctx": 4096}
     if base_name in _STOPS:
         options["stop"] = _STOPS[base_name]
     payload: dict = {
@@ -229,6 +231,7 @@ def same_frame(a: int | None, b: int | None, max_distance: int = 6) -> bool:
 
 
 _MAX_CONSECUTIVE_FAILURES = 5
+_CHUNK = 200  # frames unicos por bloco antes de descarregar o modelo
 
 
 @dataclass
@@ -292,8 +295,54 @@ def ocr_frames(
             time.sleep(1.0)
             return ocr_image_ollama(frame_paths[i], model)
 
+    # Em blocos: entre um bloco e outro o modelo e descarregado, o que zera o
+    # cache de prompt do llama.cpp. Sem isso o processo do Ollama cresceu para
+    # ~9 GB de RAM num video de 1.500 frames (medido com NUM_PARALLEL=4).
+    chunks = [reps[k : k + _CHUNK] for k in range(0, len(reps), _CHUNK)] or [[]]
+    for chunk_number, chunk in enumerate(chunks):
+        if chunk_number:
+            unload_model(model)
+        if error:
+            break
+        error, consecutive, done = _ocr_chunk(
+            chunk,
+            _read,
+            workers,
+            read,
+            failures,
+            frame_paths,
+            on_progress,
+            len(reps),
+            error,
+            consecutive,
+            done,
+        )
+
+    results: list[OcrResult | None] = []
+    for rep in plan:
+        if rep is None:
+            results.append(OcrResult("", ""))
+        else:
+            results.append(read.get(rep))
+    return OcrBatch(results=results, reused=reused, blank=blank, error=error, failed=failures)
+
+
+def _ocr_chunk(
+    chunk,
+    read_fn,
+    workers,
+    read,
+    failures,
+    frame_paths,
+    on_progress,
+    total,
+    error,
+    consecutive,
+    done,
+):
+    """Le um bloco de frames unicos em paralelo; devolve (error, consecutive, done)."""
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_read, i): i for i in reps}
+        futures = {pool.submit(read_fn, i): i for i in chunk}
         for future in as_completed(futures):
             i = futures[future]
             if future.cancelled():
@@ -316,12 +365,5 @@ def ocr_frames(
                 continue
             done += 1
             if on_progress:
-                on_progress(done, len(reps))
-
-    results: list[OcrResult | None] = []
-    for rep in plan:
-        if rep is None:
-            results.append(OcrResult("", ""))
-        else:
-            results.append(read.get(rep))
-    return OcrBatch(results=results, reused=reused, blank=blank, error=error, failed=failures)
+                on_progress(done, total)
+    return error, consecutive, done
