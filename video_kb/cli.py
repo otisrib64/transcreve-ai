@@ -112,6 +112,17 @@ def build_parser() -> argparse.ArgumentParser:
     agent_run.add_argument("--language", default=None, help="Idioma do audio, ex: pt, en")
     agent_run.add_argument("--tesseract-lang", default="por+eng", help="Idioma OCR desejado")
     agent_run.add_argument(
+        "--ocr-engine",
+        choices=("tesseract", "ollama"),
+        default=None,
+        help="Motor de OCR: tesseract (padrao) ou ollama (modelo de visao local). Sobreescreve VIDEO_KB_OCR_ENGINE.",
+    )
+    agent_run.add_argument(
+        "--ocr-model",
+        default="",
+        help="Modelo do Ollama para OCR (padrao: VIDEO_KB_OCR_MODEL ou deepseek-ocr:3b).",
+    )
+    agent_run.add_argument(
         "--cookies-browser",
         default=None,
         help="Browser para cookies do yt-dlp, ex: chrome",
@@ -200,6 +211,17 @@ def build_parser() -> argparse.ArgumentParser:
     agent_batch.add_argument("--transcribe-model", default="", help="Modelo de transcricao")
     agent_batch.add_argument("--language", default=None, help="Idioma do audio, ex: pt, en")
     agent_batch.add_argument("--tesseract-lang", default="por+eng", help="Idioma OCR desejado")
+    agent_batch.add_argument(
+        "--ocr-engine",
+        choices=("tesseract", "ollama"),
+        default=None,
+        help="Motor de OCR: tesseract (padrao) ou ollama (modelo de visao local). Sobreescreve VIDEO_KB_OCR_ENGINE.",
+    )
+    agent_batch.add_argument(
+        "--ocr-model",
+        default="",
+        help="Modelo do Ollama para OCR (padrao: VIDEO_KB_OCR_MODEL ou deepseek-ocr:3b).",
+    )
     agent_batch.add_argument("--cookies-browser", default=None, help="Browser para cookies")
     agent_batch.add_argument("--cookies", default=None, help="Arquivo cookies.txt")
     agent_batch.add_argument("--format", default="bv*+ba/b", help="Formato yt-dlp")
@@ -249,6 +271,11 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("source", help="URL ou caminho local do video")
     analyze.add_argument("--out", default="outputs", help="Diretorio de saida")
     analyze.add_argument(
+        "--run-id",
+        default="",
+        help="Id do run (letras, numeros, - e _). Padrao: timestamp + slug da fonte.",
+    )
+    analyze.add_argument(
         "--frame-interval",
         type=float,
         default=5.0,
@@ -286,6 +313,17 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--transcribe-model", default="", help="Modelo de transcricao")
     analyze.add_argument("--language", default=None, help="Idioma do audio, ex: pt, en")
     analyze.add_argument("--tesseract-lang", default="por+eng", help="Idioma OCR desejado")
+    analyze.add_argument(
+        "--ocr-engine",
+        choices=("tesseract", "ollama"),
+        default=None,
+        help="Motor de OCR: tesseract (padrao) ou ollama (modelo de visao local). Sobreescreve VIDEO_KB_OCR_ENGINE.",
+    )
+    analyze.add_argument(
+        "--ocr-model",
+        default="",
+        help="Modelo do Ollama para OCR (padrao: VIDEO_KB_OCR_MODEL ou deepseek-ocr:3b).",
+    )
     analyze.add_argument(
         "--cookies-browser",
         default=None,
@@ -555,6 +593,16 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
+def _ocr_option_kwargs(args: argparse.Namespace) -> dict:
+    """Repassa --ocr-engine/--ocr-model so quando informados (senao vale o padrao/env)."""
+    kwargs = {}
+    if getattr(args, "ocr_engine", None):
+        kwargs["ocr_engine"] = args.ocr_engine
+    if getattr(args, "ocr_model", ""):
+        kwargs["ocr_model"] = args.ocr_model
+    return kwargs
+
+
 def main() -> None:
     _load_cli_dotenvs()
     parser = build_parser()
@@ -715,6 +763,7 @@ def _cmd_agent_run(args: argparse.Namespace) -> None:
         transcribe_model=args.transcribe_model,
         language=args.language,
         tesseract_lang=args.tesseract_lang,
+        **_ocr_option_kwargs(args),
         cookies_browser=args.cookies_browser,
         cookies=args.cookies,
         video_format=args.format,
@@ -796,6 +845,7 @@ def _cmd_agent_batch(args: argparse.Namespace) -> None:
         transcribe_model=args.transcribe_model,
         language=args.language,
         tesseract_lang=args.tesseract_lang,
+        **_ocr_option_kwargs(args),
         cookies_browser=args.cookies_browser,
         cookies=args.cookies,
         video_format=args.format,
@@ -960,6 +1010,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
     options = PipelineOptions(
         out_dir=Path(args.out),
+        run_id=getattr(args, "run_id", ""),
         frame_interval=args.frame_interval,
         max_frames=args.max_frames,
         frame_strategy=args.frame_strategy,
@@ -969,6 +1020,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         transcribe_model=args.transcribe_model,
         language=args.language,
         tesseract_lang=args.tesseract_lang,
+        **_ocr_option_kwargs(args),
         cookies_browser=args.cookies_browser,
         cookies=args.cookies,
         video_format=args.format,

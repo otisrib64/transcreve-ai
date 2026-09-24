@@ -42,6 +42,9 @@ class AgentWorkflowOptions:
     # "auto" | "slides" | "interval" - ver _should_detect_slides().
     frame_strategy: str = "auto"
     templates: tuple[str, ...] = ()
+    # Vazio = padrao do pipeline (VIDEO_KB_OCR_ENGINE / VIDEO_KB_OCR_MODEL).
+    ocr_engine: str = ""
+    ocr_model: str = ""
 
 
 @dataclass
@@ -116,6 +119,8 @@ def run_agent_workflow(source: str, options: AgentWorkflowOptions) -> AgentWorkf
         storage_backend=storage_name,
         index_db=options.index_db,
         templates=options.templates,
+        **({"ocr_engine": options.ocr_engine} if options.ocr_engine else {}),
+        ocr_model=options.ocr_model,
     )
 
     warnings: list[str] = []

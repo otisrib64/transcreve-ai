@@ -33,6 +33,14 @@ local = [
   "faster-whisper>=1.0.0",
   "sentence-transformers>=3.0.0",
 ]
+ollama = [
+  "pillow>=10.0.0",  # dedupe de frames repetidos no OCR via Ollama
+]
+local-gpu = [
+  # Bibliotecas CUDA 12 que o faster-whisper (CTranslate2) precisa para rodar na GPU.
+  "nvidia-cublas-cu12",
+  "nvidia-cudnn-cu12>=9,<10",
+]
 gemini = [
   "google-generativeai>=0.7.0",
 ]
@@ -58,7 +66,7 @@ web = [
   "sse-starlette>=2.1.0",
 ]
 mcp = [
-  "mcp>=1.0.0",
+  "mcp>=1.0.0,<2",  # mcp 2.x renomeou FastMCP (mcp.server.fastmcp) e quebra create_server()
 ]
 rag = [
   "numpy>=1.24.0",

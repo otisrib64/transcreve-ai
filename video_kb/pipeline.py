@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -29,7 +30,15 @@ from .media import (
     probe_duration,
 )
 from .models import AnalysisResult, FrameObservation, KnowledgeSynthesis
-from .ocr import choose_language, ocr_code_layout, ocr_image_detailed
+from .ocr import OcrResult, choose_language, ocr_code_layout, ocr_image_detailed
+from .ocr_ollama import (
+    frame_signature,
+    ocr_image_ollama,
+    ollama_available,
+    ollama_ocr_model,
+    same_frame,
+    unload_model,
+)
 from .providers import (
     CapabilityNotSupported,
     SynthesisContext,
@@ -75,6 +84,9 @@ class PipelineOptions:
     templates: tuple[str, ...] = ()
     # "auto" | "slides" | "interval" - ver _should_detect_slides().
     frame_strategy: str = "auto"
+    # "tesseract" (padrao) | "ollama" - ver video_kb/ocr_ollama.py.
+    ocr_engine: str = field(default_factory=lambda: os.environ.get("VIDEO_KB_OCR_ENGINE", "tesseract"))
+    ocr_model: str = ""  # vazio = VIDEO_KB_OCR_MODEL ou deepseek-ocr:3b
     # --- callback opcional de progresso (web UI) ---
     # Assinatura: on_progress(step: str, detail: str) -> None
     # Default None: comportamento identico ao anterior (so prints)
@@ -271,17 +283,50 @@ class VideoKnowledgePipeline:
         ocr_lang, ocr_warning = choose_language(self.options.tesseract_lang)
         if ocr_warning:
             warnings.append(ocr_warning)
+        ocr_engine = (self.options.ocr_engine or "tesseract").strip().lower()
+        ocr_model = self.options.ocr_model or ollama_ocr_model()
+        if ocr_engine == "ollama":
+            ok, reason = ollama_available(model=ocr_model)
+            if ok:
+                _emit("ocr", f"OCR via Ollama ({ocr_model}).")
+            else:
+                warnings.append(f"{reason}; usando tesseract.")
+                ocr_engine = "tesseract"
         frames = []
+        # Frames praticamente iguais ao anterior reaproveitam o OCR dele: com
+        # amostragem densa (1 fps) a maioria dos frames repete a mesma tela.
+        last_signature: int | None = None
+        last_ocr = OcrResult("", "")
+        reused = 0
         for frame_path in frame_paths:
             timestamp = _timestamp_from_frame_name(frame_path.name)
-            ocr_text, ocr_raw = ocr_image_detailed(frame_path, ocr_lang)
+            if ocr_engine == "ollama":
+                signature = frame_signature(frame_path)
+                if same_frame(signature, last_signature):
+                    ocr_text, ocr_raw = last_ocr
+                    reused += 1
+                else:
+                    try:
+                        ocr_text, ocr_raw = ocr_image_ollama(frame_path, ocr_model)
+                    except Exception as exc:  # noqa: BLE001
+                        warnings.append(
+                            f"OCR via Ollama falhou em {frame_path.name}: {exc}; "
+                            "usando tesseract no restante do video."
+                        )
+                        ocr_engine = "tesseract"
+                        ocr_text, ocr_raw = ocr_image_detailed(frame_path, ocr_lang)
+                    last_signature, last_ocr = signature, OcrResult(ocr_text, ocr_raw)
+            else:
+                ocr_text, ocr_raw = ocr_image_detailed(frame_path, ocr_lang)
             code = extract_code_block(ocr_raw)
-            if code:
+            if code and ocr_engine != "ollama":
                 # Segunda leitura, so nos frames que tem codigo: recupera a
                 # indentacao pelas coordenadas, que o modo texto nao devolve.
+                # O modelo de visao ja devolve a indentacao no texto bruto.
                 layout = ocr_code_layout(frame_path, ocr_lang)
                 if layout:
                     code = normalize_code_block(layout)
+            if code:
                 code = normalize_code_block(strip_line_numbers(code))
             code = redact_code_secrets(code)
             frames.append(
@@ -292,6 +337,10 @@ class VideoKnowledgePipeline:
                     code=code,
                 )
             )
+        if reused:
+            _emit("ocr", f"{reused} frames repetidos reaproveitaram o OCR do frame anterior.")
+        if ocr_engine == "ollama":
+            unload_model(ocr_model)
         code_frames = sum(1 for frame in frames if frame.code)
         if code_frames:
             _emit("ocr", f"Codigo detectado em {code_frames} frames.")

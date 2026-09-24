@@ -127,7 +127,13 @@ class LocalProvider(AIProvider):
                 raise ImportError(
                     "faster-whisper nao esta instalado. Execute: pip install transcreve-ai[local]"
                 ) from exc
-            self._whisper = WhisperModel(self.whisper_model, device="cpu", compute_type="int8")
+            # Padrao CPU/int8 (funciona em qualquer maquina). Com GPU NVIDIA:
+            # VIDEO_KB_LOCAL_WHISPER_DEVICE=cuda e VIDEO_KB_LOCAL_WHISPER_COMPUTE=float16.
+            self._whisper = WhisperModel(
+                self.whisper_model,
+                device=os.environ.get("VIDEO_KB_LOCAL_WHISPER_DEVICE", "cpu"),
+                compute_type=os.environ.get("VIDEO_KB_LOCAL_WHISPER_COMPUTE", "int8"),
+            )
         return self._whisper
 
     # ------------------------------------------------------------------
