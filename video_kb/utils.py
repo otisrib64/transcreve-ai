@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import urllib.parse
 from collections.abc import Iterable
@@ -216,11 +217,8 @@ def sha256_file(path: Path) -> str:
 
 
 def which(name: str) -> str | None:
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        candidate = Path(directory) / name
-        if candidate.exists() and os.access(str(candidate), os.X_OK):
-            return str(candidate)
-    return None
+    # shutil.which honors PATHEXT, so "tesseract" resolves to tesseract.exe on Windows.
+    return shutil.which(name)
 
 
 def load_dotenv(path: Path) -> None:
